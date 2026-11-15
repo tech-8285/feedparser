@@ -48,7 +48,6 @@ class JSONParser:
         ("id", "guid"),
         ("url", "link"),
         ("summary", "summary"),
-        ("external_url", "source"),
     )
 
     def __init__(self, baseuri=None, baselang=None, encoding=None):
@@ -77,7 +76,10 @@ class JSONParser:
             self.parse_author(data["author"], self.feeddata)
         # TODO: hubs; expired has no RSS equivalent
 
-        self.entries = [self.parse_entry(e) for e in data["items"]]
+        items = data.get("items")
+        if not isinstance(items, list):
+            items = []
+        self.entries = [self.parse_entry(e) for e in items if isinstance(e, dict)]
 
     def parse_entry(self, e):
         entry = FeedParserDict()
@@ -85,51 +87,115 @@ class JSONParser:
             if src in e:
                 entry[dst] = e[src]
 
-        if "content_text" in e:
-            entry["content"] = c = FeedParserDict()
-            c["value"] = e["content_text"]
-            c["type"] = "text"
-        elif "content_html" in e:
-            entry["content"] = c = FeedParserDict()
-            c["value"] = sanitize_html(
-                e["content_html"], self.encoding, "application/json"
+        # Map the item's URL to an `alternate` link, as the XML parsers do,
+        # so that `entry.links` is usable regardless of the feed format.
+        link = e.get("url")
+        if isinstance(link, str) and link:
+            entry.setdefault("links", []).append(
+                FeedParserDict(
+                    {
+                        "rel": "alternate",
+                        "type": "text/html",
+                        "href": link,
+                    }
+                )
             )
-            c["type"] = "html"
+
+        # `content` is always a list of content dictionaries, matching
+        # the structure produced by the XML parsers.
+        if "content_text" in e:
+            content = self.make_content("text/plain", e["content_text"])
+        elif "content_html" in e:
+            value = e["content_html"]
+            if isinstance(value, str):
+                value = sanitize_html(value, self.encoding, "application/json")
+            content = self.make_content("text/html", value)
+        else:
+            content = None
+        if content is not None:
+            entry["content"] = [content]
 
         if "date_published" in e:
             entry["published"] = e["date_published"]
-            entry["published_parsed"] = _parse_date(e["date_published"])
-        if "date_updated" in e:
+            entry["published_parsed"] = self.parse_date(e["date_published"])
+        if "date_modified" in e:
             entry["updated"] = e["date_modified"]
-            entry["updated_parsed"] = _parse_date(e["date_modified"])
+            entry["updated_parsed"] = self.parse_date(e["date_modified"])
 
         if "tags" in e:
-            entry["category"] = e["tags"]
+            tags = e["tags"]
+            if isinstance(tags, list):
+                entry["tags"] = [FeedParserDict({"term": t}) for t in tags]
+            else:
+                entry["tags"] = tags
 
         if "author" in e:
             self.parse_author(e["author"], entry)
 
+        # `external_url` maps to a source dictionary, mirroring how
+        # the XML parsers expose an item's `<source>` element.
+        if "external_url" in e:
+            entry["source"] = FeedParserDict({"href": e["external_url"]})
+
         if "attachments" in e:
-            entry["enclosures"] = [self.parse_attachment(a) for a in e["attachments"]]
+            attachments = e["attachments"]
+            if isinstance(attachments, list):
+                for attachment in attachments:
+                    enclosure = self.parse_attachment(attachment)
+                    if enclosure is not None:
+                        entry.setdefault("links", []).append(enclosure)
 
         return entry
 
+    def make_content(self, content_type, value):
+        content = FeedParserDict()
+        content["type"] = content_type
+        content["language"] = self.lang
+        content["base"] = self.baseuri
+        content["value"] = value
+        return content
+
     @staticmethod
     def parse_author(parent, dest):
+        if parent is None:
+            # An explicit null remains distinguishable from a missing key.
+            dest["author"] = None
+            return
+        if not isinstance(parent, dict):
+            return
         dest["author_detail"] = detail = FeedParserDict()
+        dest["authors"] = [detail]
         if "name" in parent:
             dest["author"] = detail["name"] = parent["name"]
         if "url" in parent:
-            if parent["url"].startswith("mailto:"):
-                detail["email"] = parent["url"][7:]
+            url = parent["url"]
+            if isinstance(url, str) and url.startswith("mailto:"):
+                detail["email"] = url[7:]
             else:
-                detail["href"] = parent["url"]
+                detail["href"] = url
+
+    @staticmethod
+    def parse_date(value):
+        # Only strings are date candidates; anything else (null, numbers)
+        # yields no parsed date rather than aborting the whole parse.
+        if isinstance(value, str):
+            return _parse_date(value)
+        return None
 
     @staticmethod
     def parse_attachment(attachment):
+        # A malformed attachment is skipped rather than allowed
+        # to discard the entry -- or the other entries in the feed.
+        if not isinstance(attachment, dict):
+            return None
+        url = attachment.get("url")
+        if not isinstance(url, str):
+            return None
         enc = FeedParserDict()
-        enc["href"] = attachment["url"]
-        enc["type"] = attachment["mime_type"]
+        enc["rel"] = "enclosure"
+        enc["href"] = url
+        if "mime_type" in attachment:
+            enc["type"] = attachment["mime_type"]
         if "size_in_bytes" in attachment:
             enc["length"] = attachment["size_in_bytes"]
         return enc

@@ -1,0 +1,27 @@
+{
+    "__TEST__": "Description: malformed attachments do not swallow valid entries Expect: not bozo and len(entries) == 3 and len(entries[0].enclosures) == 1 and entries[0].enclosures[0].href == 'https://example.org/ok.mp3' and entries[0].enclosures[0].type == 'audio/mpeg' and entries[1].title == 'survives' and 'enclosures' not in entries[2] -->",
+    "version": "https://jsonfeed.org/version/1",
+    "title": "Malformed attachments",
+    "items": [
+        {
+            "id": "1",
+            "attachments": [
+                { "mime_type": "audio/mpeg" },
+                null,
+                "not-a-dict",
+                {
+                    "url": "https://example.org/ok.mp3",
+                    "mime_type": "audio/mpeg"
+                }
+            ]
+        },
+        {
+            "id": "2",
+            "title": "survives"
+        },
+        {
+            "id": "3",
+            "attachments": null
+        }
+    ]
+}

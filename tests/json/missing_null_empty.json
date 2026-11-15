@@ -1,0 +1,23 @@
+{
+    "__TEST__": "Description: missing, null, and empty stay distinguishable Expect: not bozo and len(entries) == 4 and 'title' not in entries[0] and 'title' in entries[1] and entries[1].title is None and entries[2].title == '' and entries[3].author is None and entries[3].content[0].value is None and entries[3].content[0].type == 'text/html' -->",
+    "version": "https://jsonfeed.org/version/1",
+    "title": "Missing semantics",
+    "items": [
+        {
+            "id": "missing"
+        },
+        {
+            "id": "null",
+            "title": null
+        },
+        {
+            "id": "empty",
+            "title": ""
+        },
+        {
+            "id": "null-structures",
+            "author": null,
+            "content_html": null
+        }
+    ]
+}

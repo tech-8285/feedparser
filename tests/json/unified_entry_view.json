@@ -1,0 +1,22 @@
+{
+    "__TEST__": "Description: JSON entries expose the unified entry view Expect: not bozo and entries[0].id == '1' and entries[0].content[0].value == 'body' and entries[0].content[0].type == 'text/plain' and entries[0].enclosures[0].href == 'https://example.org/a.mp3' and entries[0].enclosures[0].type == 'audio/mpeg' and entries[0].enclosures[0].length == 10 and entries[0].source.href == 'https://origin.example/feed' and entries[0].links[0].rel == 'alternate' and entries[0].links[0].href == 'https://example.org/1' and entries[0].category == 'test' and entries[0].updated == '2024-01-02T03:04:05Z' and entries[0].updated_parsed is not None -->",
+    "version": "https://jsonfeed.org/version/1",
+    "title": "Unified entry view",
+    "items": [
+        {
+            "id": "1",
+            "url": "https://example.org/1",
+            "content_text": "body",
+            "date_modified": "2024-01-02T03:04:05Z",
+            "tags": ["test"],
+            "external_url": "https://origin.example/feed",
+            "attachments": [
+                {
+                    "url": "https://example.org/a.mp3",
+                    "mime_type": "audio/mpeg",
+                    "size_in_bytes": 10
+                }
+            ]
+        }
+    ]
+}
