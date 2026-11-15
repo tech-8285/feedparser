@@ -389,6 +389,14 @@ def convert_file_to_utf8(
         result["encoding"] = "utf-8"
         return StreamFactory(prefix, file, "utf-8")
 
+    # Encoding detection below assumes read(size) fills the request:
+    # it consumes a prefix and uses tell()/seek() to remember where the
+    # unconsumed remainder starts. Streams that return fewer bytes than
+    # requested (unbuffered sockets, for example) would otherwise truncate
+    # the BOM/declaration sniffing prefix and split multi-byte characters,
+    # corrupting both the detected encoding and the replayed prefix.
+    file = FullReadFileWrapper(file)
+
     if optimistic_encoding_detection:
         prefix = convert_file_prefix_to_utf8(http_headers, file, result)
         factory = StreamFactory(prefix, file, result.get("encoding"))
@@ -525,6 +533,47 @@ def read_to_after_ascii_byte(file: typing.IO[bytes], max_len: int) -> bytes:
 
 class MissingEncoding(io.UnsupportedOperation):
     pass
+
+
+class FullReadFileWrapper:
+    """Normalize short reads so that read(size) returns up to *size* bytes.
+
+    A binary stream is allowed to return fewer bytes than requested
+    (that is the whole point of a short read). The encoding detection
+    routines assume reads are filled, so a stream that returns short reads
+    is wrapped to loop until the request is satisfied or the stream is
+    exhausted. Position-related methods are delegated unchanged so that
+    callers that measure how much has been consumed still see the real
+    offsets of the underlying stream.
+
+    """
+
+    def __init__(self, file):
+        self.file = file
+
+    def read(self, size=-1):
+        if size is None or size < 0:
+            return self.file.read()
+
+        chunks = []
+        remaining = size
+        while remaining > 0:
+            chunk = self.file.read(remaining)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+
+        return b"".join(chunks)
+
+    def seek(self, *args, **kwargs):
+        return self.file.seek(*args, **kwargs)
+
+    def tell(self):
+        return self.file.tell()
+
+    def seekable(self):
+        return self.file.seekable()
 
 
 class StreamFactory:
