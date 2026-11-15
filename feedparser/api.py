@@ -353,6 +353,21 @@ def _parse_file_inplace(
 
         feed_parser.feed(data)
 
+        # If the feed was truncated (e.g. the transfer was interrupted),
+        # the final entry may have been left unclosed. A partially parsed
+        # entry must not inherit another entry's metadata nor be delivered
+        # as if it were complete, and the result must be flagged as
+        # not well-formed.
+        if feed_parser.inentry:
+            if feed_parser.entries:
+                # The final entry was never closed; discard it.
+                del feed_parser.entries[-1]
+            result["bozo"] = 1
+            if "bozo_exception" not in result:
+                result["bozo_exception"] = xml.sax.SAXException(
+                    "no element found: the feed is truncated"
+                )
+
         # If parsing with the loose XML parser resulted in no information,
         # flag that the JSON parser should be tried.
         if not (feed_parser.entries or feed_parser.feeddata or feed_parser.version):
