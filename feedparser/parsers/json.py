@@ -61,6 +61,25 @@ class JSONParser:
         self.namespacesInUse = []
         self.entries = []
 
+        # Non-fatal parsing problems. The first one is retained, mirroring
+        # StrictXMLParser.error(); the feed stays partially usable.
+        self.bozo = 0
+        self.exc = None
+
+    def _mark_bozo(self, exc):
+        if not self.bozo:
+            self.exc = exc
+        self.bozo = 1
+
+    def _detail(self, value, content_type):
+        """Build a content detail dict shaped like the XML parser's."""
+        return FeedParserDict(
+            value=value,
+            type=content_type,
+            language=self.lang,
+            base=self.baseuri,
+        )
+
     def feed(self, file):
         data = json.load(file)
 
@@ -77,59 +96,170 @@ class JSONParser:
             self.parse_author(data["author"], self.feeddata)
         # TODO: hubs; expired has no RSS equivalent
 
-        self.entries = [self.parse_entry(e) for e in data["items"]]
+        items = data.get("items")
+        if not isinstance(items, list):
+            self._mark_bozo(TypeError("JSON Feed 'items' must be a list"))
+            self.entries = []
+            return
+
+        # Parse every item independently so one malformed item cannot
+        # discard the remaining entries.
+        entries = []
+        for item in items:
+            try:
+                entries.append(self.parse_entry(item))
+            except Exception as exc:
+                self._mark_bozo(exc)
+        self.entries = entries
 
     def parse_entry(self, e):
+        if not isinstance(e, dict):
+            raise TypeError("JSON Feed items must be JSON objects")
+
         entry = FeedParserDict()
+        # Presence-based copying keeps missing keys, explicit nulls and
+        # empty strings distinguishable in the unified entry view.
         for src, dst in self.ITEM_FIELDS:
             if src in e:
                 entry[dst] = e[src]
 
-        if "content_text" in e:
-            entry["content"] = c = FeedParserDict()
-            c["value"] = e["content_text"]
-            c["type"] = "text"
-        elif "content_html" in e:
-            entry["content"] = c = FeedParserDict()
-            c["value"] = sanitize_html(
-                e["content_html"], self.encoding, "application/json"
+        if "url" in e:
+            entry.setdefault("links", []).append(
+                FeedParserDict(
+                    rel="alternate",
+                    type="text/html",
+                    href=e["url"],
+                )
             )
-            c["type"] = "html"
+
+        if "title" in e:
+            entry["title_detail"] = self._detail(e["title"], "text/plain")
+        if "summary" in e:
+            entry["summary_detail"] = self._detail(e["summary"], "text/plain")
+
+        if "content_text" in e:
+            entry["content"] = [self._parse_text_content(e["content_text"])]
+        elif "content_html" in e:
+            entry["content"] = [self._parse_html_content(e["content_html"])]
 
         if "date_published" in e:
             entry["published"] = e["date_published"]
-            entry["published_parsed"] = _parse_date(e["date_published"])
+            entry["published_parsed"] = self._parse_date_value(e["date_published"])
         if "date_updated" in e:
-            entry["updated"] = e["date_modified"]
-            entry["updated_parsed"] = _parse_date(e["date_modified"])
+            entry["updated"] = e["date_updated"]
+            entry["updated_parsed"] = self._parse_date_value(e["date_updated"])
 
         if "tags" in e:
-            entry["category"] = e["tags"]
+            self.parse_tags(e["tags"], entry)
 
         if "author" in e:
             self.parse_author(e["author"], entry)
 
         if "attachments" in e:
-            entry["enclosures"] = [self.parse_attachment(a) for a in e["attachments"]]
+            self.parse_attachments(e["attachments"], entry)
 
         return entry
 
-    @staticmethod
-    def parse_author(parent, dest):
-        dest["author_detail"] = detail = FeedParserDict()
-        if "name" in parent:
-            dest["author"] = detail["name"] = parent["name"]
-        if "url" in parent:
-            if parent["url"].startswith("mailto:"):
-                detail["email"] = parent["url"][7:]
-            else:
-                detail["href"] = parent["url"]
+    def _parse_text_content(self, value):
+        if value is not None and not isinstance(value, str):
+            self._mark_bozo(TypeError("'content_text' must be a string"))
+        return self._detail(value, "text/plain")
 
-    @staticmethod
-    def parse_attachment(attachment):
-        enc = FeedParserDict()
-        enc["href"] = attachment["url"]
-        enc["type"] = attachment["mime_type"]
-        if "size_in_bytes" in attachment:
-            enc["length"] = attachment["size_in_bytes"]
-        return enc
+    def _parse_html_content(self, value):
+        if isinstance(value, str):
+            value = sanitize_html(value, self.encoding, "application/json")
+        elif value is not None:
+            self._mark_bozo(TypeError("'content_html' must be a string"))
+        return self._detail(value, "text/html")
+
+    def _parse_date_value(self, value):
+        if isinstance(value, str):
+            return _parse_date(value)
+        if value is not None:
+            self._mark_bozo(TypeError("JSON Feed dates must be strings"))
+        return None
+
+    def parse_tags(self, tags, entry):
+        if tags is None:
+            # An explicit null is an explicitly empty tag collection.
+            entry["tags"] = []
+            return
+        if not isinstance(tags, list):
+            self._mark_bozo(TypeError("JSON Feed 'tags' must be a list"))
+            return
+        parsed = []
+        for tag in tags:
+            if not isinstance(tag, str):
+                self._mark_bozo(TypeError("JSON Feed tags must be strings"))
+                continue
+            parsed.append(FeedParserDict(term=tag, scheme=None, label=None))
+        entry["tags"] = parsed
+
+    def parse_author(self, parent, dest):
+        if parent is None:
+            # Explicit null: keep the author keys but empty detail so the
+            # value stays distinguishable from a missing author.
+            detail = FeedParserDict()
+            dest["author_detail"] = detail
+            dest["authors"] = [detail]
+            dest["author"] = None
+            return
+        if not isinstance(parent, dict):
+            self._mark_bozo(TypeError("JSON Feed 'author' must be an object"))
+            return
+
+        detail = FeedParserDict()
+        dest["author_detail"] = detail
+        dest["authors"] = [detail]
+
+        if "name" in parent:
+            # May be None or an empty string; both are meaningful values.
+            detail["name"] = parent["name"]
+            dest["author"] = parent["name"]
+        if "url" in parent:
+            url = parent["url"]
+            if url is None:
+                detail["href"] = None
+            elif isinstance(url, str):
+                if url.startswith("mailto:"):
+                    detail["email"] = url[7:]
+                else:
+                    detail["href"] = url
+            else:
+                self._mark_bozo(TypeError("JSON Feed author url must be a string"))
+
+    def parse_attachments(self, attachments, entry):
+        if not isinstance(attachments, list):
+            self._mark_bozo(TypeError("JSON Feed 'attachments' must be a list"))
+            return
+
+        links = entry.setdefault("links", [])
+        for attachment in attachments:
+            if not isinstance(attachment, dict):
+                self._mark_bozo(TypeError("JSON Feed attachments must be objects"))
+                continue
+            if "url" not in attachment or "mime_type" not in attachment:
+                self._mark_bozo(
+                    ValueError("JSON Feed attachments require 'url' and 'mime_type'")
+                )
+                continue
+            url = attachment["url"]
+            mime_type = attachment["mime_type"]
+            if url is None or mime_type is None:
+                self._mark_bozo(
+                    ValueError(
+                        "JSON Feed attachment 'url' and 'mime_type' must not be null"
+                    )
+                )
+                continue
+
+            link = FeedParserDict(
+                rel="enclosure",
+                href=url,
+                type=mime_type,
+            )
+            size = attachment.get("size_in_bytes")
+            if size is not None:
+                # XML enclosure lengths are always strings.
+                link["length"] = str(size)
+            links.append(link)

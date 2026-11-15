@@ -68,6 +68,7 @@ SUPPORTED_VERSIONS = {
     "atom": "Atom (unknown version)",
     "cdf": "CDF",
     "json1": "JSON feed 1",
+    "json11": "JSON feed 1.1",
 }
 
 
@@ -366,6 +367,12 @@ def _parse_file_inplace(
         except Exception as e:
             result["bozo"] = 1
             result["bozo_exception"] = e
+        else:
+            # The JSON parser recovers from local malformed data and keeps
+            # parsing; surface that without discarding the valid output.
+            if feed_parser.bozo:
+                result["bozo"] = 1
+                result["bozo_exception"] = feed_parser.exc
 
     result["feed"] = feed_parser.feeddata
     result["entries"] = feed_parser.entries
