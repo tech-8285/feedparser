@@ -389,6 +389,12 @@ def convert_file_to_utf8(
         result["encoding"] = "utf-8"
         return StreamFactory(prefix, file, "utf-8")
 
+    # Normalize short reads: encoding detection assumes read(size) fills the
+    # request, and uses tell()/seek() to track which bytes were consumed.
+    # Streams that return fewer bytes than requested would otherwise split a
+    # BOM or multi-byte character across reads and corrupt that bookkeeping.
+    file = FullReadFileWrapper(file)
+
     if optimistic_encoding_detection:
         prefix = convert_file_prefix_to_utf8(http_headers, file, result)
         factory = StreamFactory(prefix, file, result.get("encoding"))
@@ -578,6 +584,45 @@ class StreamFactory:
         if self.should_reset:
             self.file.reset()
         self.should_reset = True
+
+
+class FullReadFileWrapper:
+    """Guarantee that read(size) returns up to *size* bytes.
+
+    Some binary streams (for example, unbuffered socket streams) may return
+    fewer bytes than requested from a single read(size) call. The encoding
+    detection logic assumes that read(size) fills the request, so wrapping
+    such a stream normalizes short reads by looping until the request is
+    satisfied or the underlying stream reaches EOF.
+
+    Seek/tell/seekable are delegated so that the wrapped stream keeps the
+    same positioning behavior as the underlying one.
+    """
+
+    def __init__(self, file: typing.IO[bytes]):
+        self.file = file
+
+    def read(self, size: int = -1) -> bytes:
+        if size is None or size < 0:
+            return self.file.read()
+        chunks: list[bytes] = []
+        remaining = size
+        while remaining > 0:
+            chunk = self.file.read(remaining)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        return b"".join(chunks)
+
+    def seek(self, *args: typing.Any) -> int:
+        return self.file.seek(*args)
+
+    def tell(self) -> int:
+        return self.file.tell()
+
+    def seekable(self) -> bool:
+        return self.file.seekable()
 
 
 class ResetFileWrapper:
