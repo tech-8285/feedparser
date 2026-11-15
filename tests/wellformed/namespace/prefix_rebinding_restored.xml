@@ -1,0 +1,21 @@
+<!--
+Description:  a prefix rebound in a nested scope must be restored when the scope ends
+Expect:       not bozo and entries[0]['media_content'][0]['url'] == 'http://example.com/a.mp3' and entries[1]['media_content'][0]['url'] == 'http://example.com/b.mp3' and 'dc_content' not in entries[1] and entries[1]['title'] == 'i2'
+-->
+<rss version="2.0" xmlns:media="http://search.yahoo.com/mrss/">
+<channel>
+<title>test</title>
+<link>http://example.com/</link>
+<item>
+  <title>i1</title>
+  <media:content url="http://example.com/a.mp3" type="audio/mpeg"/>
+</item>
+<item>
+  <title>i2</title>
+  <wrap xmlns:media="http://purl.org/dc/elements/1.1/">
+    <media:title>dc title</media:title>
+  </wrap>
+  <media:content url="http://example.com/b.mp3" type="audio/mpeg"/>
+</item>
+</channel>
+</rss>

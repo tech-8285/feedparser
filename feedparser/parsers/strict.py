@@ -46,8 +46,6 @@ class StrictXMLParser:
         return k, v
 
     def startPrefixMapping(self, prefix, uri):
-        if not uri:
-            return
         # Jython uses '' instead of None; standardize on None
         prefix = prefix or None
         self.track_namespace(prefix, uri)

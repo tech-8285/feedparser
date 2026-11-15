@@ -44,6 +44,10 @@ email_pattern = re.compile(
     r"(\?subject=\S+)?"
 )
 
+# Sentinel marking that a prefix had no namespace binding before a
+# declaration came into scope.
+_MISSING = object()
+
 
 class XMLParserMixin(
     _base.Namespace,
@@ -197,6 +201,13 @@ class XMLParserMixin(
         self.contentparams = FeedParserDict()
         self._summaryKey = None
         self.namespacemap = {}
+        # Namespace declarations are scoped to the element that declares
+        # them. `_ns_scopes` is a stack of (tag, bindings) tuples, where
+        # each binding is a (prefix, previous mapping) pair that can be
+        # restored when the element ends. `_ns_pending` collects bindings
+        # reported by the SAX parser before the next start tag arrives.
+        self._ns_scopes = []
+        self._ns_pending = []
         self.elementstack = []
         self.basestack = []
         self.langstack = []
@@ -258,6 +269,12 @@ class XMLParserMixin(
                 self.track_namespace(prefix[6:], uri)
             elif prefix == "xmlns":
                 self.track_namespace(None, uri)
+
+        # Begin a namespace scope for this element. Bindings declared by
+        # this element (or reported by the SAX parser since the previous
+        # start tag) are restored when the element's end tag is seen.
+        self._ns_scopes.append((tag, self._ns_pending))
+        self._ns_pending = []
 
         # track inline content
         if self.incontent and not self.contentparams.get("type", "xml").endswith("xml"):
@@ -338,6 +355,9 @@ class XMLParserMixin(
             method()
         except AttributeError:
             self.pop(prefix + suffix)
+
+        # restore namespace bindings that go out of scope with this element
+        self._pop_ns_scope(tag)
 
         # track inline content
         if self.incontent and not self.contentparams.get("type", "xml").endswith("xml"):
@@ -443,9 +463,13 @@ class XMLParserMixin(
         return content_type
 
     def track_namespace(self, prefix, uri):
+        # Normalize the default namespace's prefix (None or "") to "" so
+        # that declarations and lookups always use the same key.
+        prefix = prefix or ""
+        uri = uri or ""
         loweruri = uri.lower()
         if not self.version:
-            if (prefix, loweruri) == (None, "http://my.netscape.com/rdf/simple/0.9/"):
+            if (prefix, loweruri) == ("", "http://my.netscape.com/rdf/simple/0.9/"):
                 self.version = "rss090"
             elif loweruri == "http://purl.org/rss/1.0/":
                 self.version = "rss10"
@@ -455,11 +479,39 @@ class XMLParserMixin(
             # match any backend.userland.com namespace
             uri = "http://backend.userland.com/rss"
             loweruri = uri
+        # Record the current binding so that it can be restored when this
+        # declaration goes out of scope.
+        self._ns_pending.append((prefix, self.namespacemap.get(prefix, _MISSING)))
+        if not uri:
+            # A namespace undeclaration (e.g. xmlns=""); the prefix only
+            # retains its literal meaning within this scope.
+            self.namespacemap[prefix] = prefix
+            return
         if loweruri in self._matchnamespaces:
-            self.namespacemap[prefix] = self._matchnamespaces[loweruri]
-            self.namespaces_in_use[self._matchnamespaces[loweruri]] = uri
+            standard_prefix = self._matchnamespaces[loweruri]
+            self.namespacemap[prefix] = standard_prefix
+            self.namespaces_in_use[standard_prefix] = uri
         else:
-            self.namespaces_in_use[prefix or ""] = uri
+            # Unknown namespaces are mapped to themselves so that a local
+            # declaration can neither shadow nor be shadowed by known
+            # namespaces declared in other scopes.
+            self.namespacemap[prefix] = prefix
+            self.namespaces_in_use[prefix] = uri
+
+    def _pop_ns_scope(self, tag):
+        if not self._ns_scopes:
+            return
+        scope_tag, bindings = self._ns_scopes[-1]
+        if scope_tag != tag:
+            # Unbalanced end tag in ill-formed input; leave the innermost
+            # scope untouched rather than corrupting an ancestor's scope.
+            return
+        del self._ns_scopes[-1]
+        for prefix, previous in reversed(bindings):
+            if previous is _MISSING:
+                self.namespacemap.pop(prefix, None)
+            else:
+                self.namespacemap[prefix] = previous
 
     def resolve_uri(self, uri):
         return _urljoin(self.baseuri or "", uri)
